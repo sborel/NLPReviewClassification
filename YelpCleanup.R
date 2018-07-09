@@ -78,16 +78,20 @@ library(text2vec)
 library(caret)
 set.seed(100)
 trainIndex = createDataPartition(reviews$starsbinary, p=0.6, list=FALSE, times=1)
-train = mydata[trainIndex,]
-test = mydata[-trainIndex,]
+train = reviews[trainIndex,]
+test = reviews[-trainIndex,]
 
-t1 <- itoken(reviews$text,
+t1 <- itoken(train$text,
              preprocessor = tolower,
              tokenizer = word_tokenizer,
-             ids = reviews$review_id,
+             ids = train$review_id,
              progressbar = TRUE)
 vocab <- create_vocabulary(t1, stopwords = stopwords::stopwords("en"))
-vectorizer = vocab_vectorizer(vocab)
+vocab_pruned <- prune_vocabulary(vocab, 
+                          term_count_min = 10, 
+                          doc_proportion_max = 0.5,
+                          doc_proportion_min = 0.001)
+vectorizer = vocab_vectorizer(vocab_pruned)
 dtm_train = create_dtm(t1, vectorizer) #created a document term matrix
 dim(dtm_train) # rows are the reviews and columns ar ethe terms
 # for example
@@ -99,7 +103,7 @@ dim(dtm_train) # rows are the reviews and columns ar ethe terms
 library(glmnet)
 NFOLDS = 4
 t1 = Sys.time()
-glmnet_classifier = cv.glmnet(x = dtm_train, y = reviews$starsbinary,
+glmnet_classifier = cv.glmnet(x = dtm_train, y = train$starsbinary,
                               family = 'binomial',
                               # L1 penalty
                               alpha = 1,
@@ -112,5 +116,19 @@ glmnet_classifier = cv.glmnet(x = dtm_train, y = reviews$starsbinary,
                               # again lower number of iterations for faster training
                               maxit = 1e3)
 print(difftime(Sys.time(), t1, units = 'sec'))
+plot(glmnet_classifier)
+print(paste("max AUC =", round(max(glmnet_classifier$cvm), 4)))
 
-preds = predict(glmnet_classifier, dtm_test, type = 'response')[,1])
+# Testing on test data
+
+it_test <- itoken(test$text,
+             preprocessor = tolower,
+             tokenizer = word_tokenizer,
+             ids = test$review_id,
+             progressbar = TRUE)
+dtm_test = create_dtm(it_test, vectorizer)
+dim(dtm_test)
+
+preds = predict(glmnet_classifier, dtm_test, type = 'response')[,1]
+glmnet:::auc(test$starsbinary, preds)
+
