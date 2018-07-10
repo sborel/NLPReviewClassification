@@ -1,0 +1,231 @@
+---
+title: "NLPReviewClassification"
+author: "SantaBorel"
+date: '2018-07-09'
+output: word_document
+---
+
+####Include Description
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(jsonlite)
+library(caret)
+library(stopwords)
+library(text2vec)
+library(glmnet)
+```
+
+## Loading the business.json file from the Yelp data
+# This file provides information about the businesses included in Yelp.
+
+```{r loading business data}
+business <- stream_in(file("dataset/business.json"))
+
+# Filter on businesses that are in the Canadian province of Ontario
+businessON <- business[which(business$state=="ON"),];
+
+# Remove full business file to save memory
+rm(business)
+```
+
+## Explore the businessON files to determine which fields are important for the analysis.
+# This analysis is focused on the restaurant ratings. Then we need to determine which fields and values
+# can be used to filter the data to just restaurant establishments.
+# It is important to filter the data to just the ones that we are interested in. NLP models are 
+# very contex dependement since people may speak differently or leave different types of phrases
+# for different categories of businesses.
+
+```{r get data for restaurants, echo=FALSE}
+
+str(businessON)
+
+# First explore the types of categories that could be associated with a restaurant/food serving business
+categories <- data.frame(table(unlist(businessON$categories)))
+# Order by the count
+categ.ordered <- categories[order(categories$Freq, decreasing = TRUE),]
+
+head(categ.ordered, 20)
+# A lot of the potentially food related categories are ambiguous so only the businesses containing
+# the 'Restaurant' tag for the Categories field will be included
+
+restON <- businessON[mapply('%in%',"Restaurants",businessON$categories),];
+
+# Remove businessON data to save memory
+rm(businessON)
+
+```
+
+## The next step is to load the data that contain the user text reviews and other review parameters
+# The full file is too large to be handled in memory so the loading method filters the data
+# to save the reviews that have the business_id that is included in restON (restaurants from Ontario)
+
+```{r load reviews}
+
+#Pull in reviews where businesses are in ON and a Restaurant
+con_in <- file("dataset/review.json")
+con_out <- file(tmp <- tempfile(), open = "wb")
+stream_in(con_in, handler = function(df){
+      df <- df[which(df$business_id %in% restON$business_id),]
+      stream_out(df, con_out, pagesize = 1000, verbose = FALSE)
+}, pagesize = 5000)
+close(con_out)
+reviews <- stream_in(file(tmp))
+nrow(reviews)
+unlink(tmp)
+
+str(reviews)
+
+```
+
+## Evaluate the reviews rating and look at the distribution for the number of stars given to businesses
+# The initial analysis will focus on being able to classify a review as good or bad (e.g. a binary score).
+# This is defined as below or above median
+
+``` {r evaluate star distribution}
+
+## Get distribution for number of reviews
+table(as.numeric(reviews$stars))
+hist(as.numeric(reviews$stars))
+
+# there are no null values here - all reviews have a star rating
+sum(is.na(as.numeric(reviews$stars)))
+
+# For the initial analysis the scoring will be simplified to a binary value - below or above the median
+
+median(as.numeric(reviews$stars))
+reviews$starsbinary <- NA;
+reviews$starsbinary[which(as.numeric(reviews$stars) <= 3)] <- 0;
+reviews$starsbinary[which(as.numeric(reviews$stars) > 3)] <- 1;
+
+head(reviews$stars,10)
+head(reviews$starsbinary,10)
+
+```
+
+## Now that the data is prepared the model can start to be prepared. 
+
+# First the training and test sets need to be created
+
+```{r train test sets}
+# Seed is set for reproducibility
+set.seed(100)
+
+# From the caret package the createDataPartition function is used to created indices for 
+# test (40%) and training (60%) data. The data is sampled based on the created binary rating
+# field (starsbinary)
+trainIndex = createDataPartition(reviews$starsbinary, p=0.6, list=FALSE)
+train = reviews[trainIndex,]
+test = reviews[-trainIndex,]
+
+```
+
+# First the text data needs to be prepared to be ingested by an algorithm
+# The text reviews are tokenized and a document term matrix is created
+
+```{r tokenize and dtm}
+
+# Used to create iterators for further use
+# The text data will be tokenized to words and all text will be made lowercase
+# Progress bar is set to false since it doesn't display well in rmd
+t1 <- itoken(train$text,
+             preprocessor = tolower,
+             tokenizer = word_tokenizer,
+             ids = train$review_id,
+             progressbar = FALSE)
+
+# The vocabulary matrix is created with stopwords being removed
+vocab <- create_vocabulary(t1, stopwords = stopwords::stopwords("en"))
+head(vocab, 25)
+
+# There are a lot of words that are rarely used in reviews and that may be
+# misspelled or in a non-english language. Since NLP will preform best when
+# only one language is used, these need to be filtered out. Less commonly used words
+# are also removed since they will just add noise to the algorithm.
+
+vocab_pruned <- prune_vocabulary(vocab, 
+                          term_count_min = 10, 
+                          doc_proportion_max = 0.5,
+                          doc_proportion_min = 0.001)
+
+vectorizer = vocab_vectorizer(vocab_pruned)
+
+# A document term matrix is created
+dtm_train = create_dtm(t1, vectorizer) 
+dim(dtm_train) # rows are the reviews and columns are the terms
+
+# for example
+# dtm_train[1,which(dtm_train[1,] != 0)]
+
+```
+
+## The glmnet package will be used to create a linear model. This package uses extrememly
+# efficient procedures for fitting data (by fitting the entrie lasso or elastic-net reguarization
+# path). It uses a penalized maximum likelihood. It is a fast algorithm that can exploit sparcity in
+# the input matrix. This works well with the document term matrix since it is spacely populated.
+
+# The cv.glmnet function used here, uses cross-validation(cv). The cv used here was 4-fold.
+
+``` {r glmnet train}
+
+time_initial = Sys.time()
+
+glmnet_classifier = cv.glmnet(x = dtm_train, y = train$starsbinary,
+                              # Binomial model is used for the fit
+                              family = 'binomial',
+                              # L1 penalty, alpha 1 is the lasso penalty
+                              alpha = 1,
+                              # interested in the area under ROC curve
+                              type.measure = "auc",
+                              # n-fold cross-validation
+                              nfolds = 4,
+                              # Convergence threshold. 
+                              # Higher value is less accurate, but has faster training
+                              thresh = 1e-3,
+                              # Maximum number of itterations.
+                              # Lower value for faster training
+                              maxit = 1e3)
+
+# Print the time it took
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+# Plot the AUC value
+plot(glmnet_classifier)
+
+# The maximum AUC value
+print(paste("max AUC =", round(max(glmnet_classifier$cvm), 4)))
+
+```
+
+
+## Let's test this model on the test data
+
+``` {r glmnet test}
+
+# The iterators will be created for the test data
+it_test <- itoken(test$text,
+             preprocessor = tolower,
+             tokenizer = word_tokenizer,
+             ids = test$review_id,
+             progressbar = FALSE)
+
+# The DTM is created using the vectorizer from the training data evaluation
+dtm_test = create_dtm(it_test, vectorizer)
+
+# Again the DTM has rows equal to the number of reviews in the test data and 
+# the columns are all the terms
+dim(dtm_test)
+
+# Get the predictions for the test data using the glmnet_classifier
+preds = predict(glmnet_classifier, dtm_test, type = 'response')[,1]
+auctest = glmnet:::auc(test$starsbinary, preds)
+
+# The maximum AUC value for the test data
+print(paste("max AUC test =", round(max(auctest), 4)))
+
+```
+
+# The values for the test data is close to the training data which indicates that the 
+# model did not overfit
