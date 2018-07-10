@@ -5,8 +5,20 @@ date: '2018-07-09'
 output: word_document
 ---
 
-####Include Description
+# Restaurant Comment Review Classsification using NLP
 
+## Introduction 
+Yelp is a company that hosts a community where users review local businesses that they have visited.
+Users can check in and leave reviews for businesses that they have visited by giving it a star rating and
+writing a description. These reviews can then be voted on my other users. Yelp has made their data
+available to the public.  
+I am interested in evaluating these reviews using Natural language processing (NLP) and other
+techniques to be able to predict the star rating of restaurant reviews. Even though on the Yelp platform
+users are required to report a star rating, on other platforms it is not required (e.g. blog posts, Tweets,
+Instagram comments). For businesses to understand what clients think of them, it is important to
+evaluate multiple platforms and this will include ones where star ratings are not provided and the
+sentiment of the review will need to be interpreted. If a good algorithm is developed it could be used to
+sort through reviews/comments to quickly evaluate how clients are enjoying their business.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -18,25 +30,23 @@ library(text2vec)
 library(glmnet)
 ```
 
-## Loading the business.json file from the Yelp data
-# This file provides information about the businesses included in Yelp.
+### Loading the business.json file from the Yelp data
+This file provides information about the businesses included in Yelp.
 
 ```{r loading business data}
-business <- stream_in(file("dataset/business.json"))
+business <- stream_in(file("dataset/business.json"), verbose = FALSE)
 
 # Filter on businesses that are in the Canadian province of Ontario
 businessON <- business[which(business$state=="ON"),];
 
 # Remove full business file to save memory
 rm(business)
+
 ```
 
-## Explore the businessON files to determine which fields are important for the analysis.
-# This analysis is focused on the restaurant ratings. Then we need to determine which fields and values
-# can be used to filter the data to just restaurant establishments.
-# It is important to filter the data to just the ones that we are interested in. NLP models are 
-# very contex dependement since people may speak differently or leave different types of phrases
-# for different categories of businesses.
+### Explore the businessON data files
+This analysis is focused on the restaurant ratings. Then we need to determine which fields and values can be used to filter the data to just restaurant establishments.
+It is important to filter the data to just the ones that we are interested in. NLP models are very contex dependement since people may speak differently or leave different types of phrases for different categories of businesses.
 
 ```{r get data for restaurants, echo=FALSE}
 
@@ -58,9 +68,9 @@ rm(businessON)
 
 ```
 
-## The next step is to load the data that contain the user text reviews and other review parameters
-# The full file is too large to be handled in memory so the loading method filters the data
-# to save the reviews that have the business_id that is included in restON (restaurants from Ontario)
+### Loading the review.json file from the Yelp data
+The next step is to load the data that contain the user text reviews and other review parameters.
+The full file is too large to be handled in memory so the loading method filters the data to save the reviews that have the business_id that is included in restON (restaurants from Ontario)
 
 ```{r load reviews}
 
@@ -80,9 +90,8 @@ str(reviews)
 
 ```
 
-## Evaluate the reviews rating and look at the distribution for the number of stars given to businesses
-# The initial analysis will focus on being able to classify a review as good or bad (e.g. a binary score).
-# This is defined as below or above median
+## Evaluate the reviews rating distribution 
+Look at the distribution for the number of stars given to businesses. The initial analysis will focus on being able to classify a review as good or bad (e.g. a binary score). This is defined as below or above median
 
 ``` {r evaluate star distribution}
 
@@ -105,9 +114,10 @@ head(reviews$starsbinary,10)
 
 ```
 
-## Now that the data is prepared the model can start to be prepared. 
+## Creating a Model
+Now that the data is prepared the model can start to be prepared. 
 
-# First the training and test sets need to be created
+### Prepare training and test sets
 
 ```{r train test sets}
 # Seed is set for reproducibility
@@ -122,8 +132,9 @@ test = reviews[-trainIndex,]
 
 ```
 
-# First the text data needs to be prepared to be ingested by an algorithm
-# The text reviews are tokenized and a document term matrix is created
+### Prepare text data
+First the text data needs to be prepared to be ingested by an algorithm.
+The text reviews are tokenized and a document term matrix is created.
 
 ```{r tokenize and dtm}
 
@@ -139,12 +150,11 @@ t1 <- itoken(train$text,
 # The vocabulary matrix is created with stopwords being removed
 vocab <- create_vocabulary(t1, stopwords = stopwords::stopwords("en"))
 head(vocab, 25)
+```
 
-# There are a lot of words that are rarely used in reviews and that may be
-# misspelled or in a non-english language. Since NLP will preform best when
-# only one language is used, these need to be filtered out. Less commonly used words
-# are also removed since they will just add noise to the algorithm.
+There are a lot of words that are rarely used in reviews and that may be misspelled or in a non-english language. Since NLP will preform best when only one language is used, these need to be filtered out. Less commonly used words are also removed since they will just add noise to the algorithm.
 
+```{r}
 vocab_pruned <- prune_vocabulary(vocab, 
                           term_count_min = 10, 
                           doc_proportion_max = 0.5,
@@ -161,12 +171,10 @@ dim(dtm_train) # rows are the reviews and columns are the terms
 
 ```
 
-## The glmnet package will be used to create a linear model. This package uses extrememly
-# efficient procedures for fitting data (by fitting the entrie lasso or elastic-net reguarization
-# path). It uses a penalized maximum likelihood. It is a fast algorithm that can exploit sparcity in
-# the input matrix. This works well with the document term matrix since it is spacely populated.
+### Create Linear Model
 
-# The cv.glmnet function used here, uses cross-validation(cv). The cv used here was 4-fold.
+The glmnet package will be used to create a linear model. This package uses extrememly efficient procedures for fitting data (by fitting the entrie lasso or elastic-net reguarization path). It uses a penalized maximum likelihood. It is a fast algorithm that can exploit sparcity in the input matrix. This works well with the document term matrix since it is spacely populated.  
+The cv.glmnet function used here, uses cross-validation(cv). The cv used here was 4-fold.
 
 ``` {r glmnet train}
 
@@ -199,8 +207,7 @@ print(paste("max AUC =", round(max(glmnet_classifier$cvm), 4)))
 
 ```
 
-
-## Let's test this model on the test data
+### Testing the Model
 
 ``` {r glmnet test}
 
@@ -227,5 +234,4 @@ print(paste("max AUC test =", round(max(auctest), 4)))
 
 ```
 
-# The values for the test data is close to the training data which indicates that the 
-# model did not overfit
+The values for the test data is close to the training data which indicates that the model did not overfit
