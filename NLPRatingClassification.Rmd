@@ -2,7 +2,9 @@
 title: "NLPReviewClassification"
 author: "SantaBorel"
 date: '2018-07-09'
-output: word_document
+output:
+  word_document: default
+  pdf_document: default
 ---
 
 # Restaurant Comment Review Classsification using NLP
@@ -28,6 +30,7 @@ library(caret)
 library(stopwords)
 library(text2vec)
 library(glmnet)
+library(ggplot2)
 ```
 
 ### Loading the business.json file from the Yelp data
@@ -93,7 +96,7 @@ str(reviews)
 ## Evaluate the reviews rating distribution 
 Look at the distribution for the number of stars given to businesses. The initial analysis will focus on being able to classify a review as good or bad (e.g. a binary score). This is defined as below or above median
 
-``` {r evaluate star distribution}
+```{r evaluate star distribution}
 
 ## Get distribution for number of reviews
 table(as.numeric(reviews$stars))
@@ -147,6 +150,8 @@ t1 <- itoken(train$text,
              ids = train$review_id,
              progressbar = FALSE)
 
+# Maybe consider taking out numbers.
+
 # The vocabulary matrix is created with stopwords being removed
 vocab <- create_vocabulary(t1, stopwords = stopwords::stopwords("en"))
 head(vocab, 25)
@@ -176,7 +181,7 @@ dim(dtm_train) # rows are the reviews and columns are the terms
 The glmnet package will be used to create a linear model. This package uses extrememly efficient procedures for fitting data (by fitting the entrie lasso or elastic-net reguarization path). It uses a penalized maximum likelihood. It is a fast algorithm that can exploit sparcity in the input matrix. This works well with the document term matrix since it is spacely populated.  
 The cv.glmnet function used here, uses cross-validation(cv). The cv used here was 4-fold.
 
-``` {r glmnet train}
+```{r glmnet train}
 
 time_initial = Sys.time()
 
@@ -209,7 +214,7 @@ print(paste("max AUC =", round(max(glmnet_classifier$cvm), 4)))
 
 ### Testing the Model
 
-``` {r glmnet test}
+```{r glmnet test}
 
 # The iterators will be created for the test data
 it_test <- itoken(test$text,
@@ -226,12 +231,203 @@ dtm_test = create_dtm(it_test, vectorizer)
 dim(dtm_test)
 
 # Get the predictions for the test data using the glmnet_classifier
-preds = predict(glmnet_classifier, dtm_test, type = 'response')[,1]
+preds = predict.cv.glmnet(glmnet_classifier, dtm_test, type = 'response')[,1]
 auctest = glmnet:::auc(test$starsbinary, preds)
 
 # The maximum AUC value for the test data
 print(paste("max AUC test =", round(max(auctest), 4)))
 
+CM <- confusionMatrix(as.factor(round(preds,0)), as.factor(test$starsbinary))
+print(paste("Accuracy =", round(CM$overall[1], 3)))
+
+resultsForPlotting <- data.frame('ID' = test$review_id,
+                                'Pred' = preds,
+                                'Actual' = test$starsbinary,
+                                'ActualStars' = test$stars)
+h <- ggplot(data = resultsForPlotting, aes(Pred)) + 
+      geom_histogram(aes(fill = as.factor(Actual)), bins = 20)
+h
+
+h2 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(ActualStars))) + 
+      geom_density(alpha = 0.1)
+h2
+
 ```
 
-The values for the test data is close to the training data which indicates that the model did not overfit
+The values for the test data is close to the training data which indicates that the model did not overfit.
+The results give a high AUC=0.924
+
+### Normalization
+Now the same model will be used but with normalized data. L1 Normalization is applied where the transformation is done in a way so that the sum of each row (review) will be equal to 1. This 
+
+```{r normalize and remodel}
+
+dtm_train_norm = normalize(dtm_train, "l1")
+
+glmnet_classifier_norm = cv.glmnet(x = dtm_train_norm, y = train$starsbinary,
+                              family = 'binomial',
+                              alpha = 1,
+                              type.measure = "auc",
+                              nfolds = 4,
+                              thresh = 1e-3,
+                              maxit = 1e3)
+
+# The maximum AUC value
+print(paste("max AUC =", round(max(glmnet_classifier_norm$cvm), 4)))
+
+dtm_test_norm = normalize(dtm_test, "l1")
+
+# Get the predictions for the test data using the glmnet_classifier
+preds = predict.cv.glmnet(glmnet_classifier_norm, dtm_test_norm, type = 'response')[,1]
+auctest = glmnet:::auc(test$starsbinary, preds)
+
+# The maximum AUC value for the test data
+print(paste("max AUC test =", round(max(auctest), 4)))
+
+CM <- confusionMatrix(as.factor(round(preds,0)), as.factor(test$starsbinary))
+print(paste("Accuracy =", round(CM$overall[1], 3)))
+
+resultsForPlotting <- data.frame('ID' = test$review_id,
+                                'Pred' = preds,
+                                'Actual' = test$starsbinary,
+                                'ActualStars' = test$stars)
+h <- ggplot(data = resultsForPlotting, aes(Pred)) + 
+      geom_histogram(aes(fill = as.factor(Actual)), bins = 20)
+h
+
+h2 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(ActualStars))) + 
+      geom_density(alpha = 0.1)
+h2
+
+```
+
+Normalization provided slightly better results at AUC = 0.930 for both test and train data.
+
+### TF_IDF
+Now TF-IDF will be used to transform the training and test sets
+
+```{r TF-IDF}
+
+# define a TF-IDF model object
+tfidf_model = TfIdf$new()
+
+# fit the model to the training data
+dtm_train_tfidf = fit_transform(dtm_train, tfidf_model)
+
+# apply model to train data to prepare tf-idf version
+dtm_test_tfidf = transform(dtm_test, tfidf_model)
+
+time_initial = Sys.time()
+glmnet_classifier_tfidf = cv.glmnet(x = dtm_train_tfidf, y = train$starsbinary,
+                              family = 'binomial',
+                              alpha = 1,
+                              type.measure = "auc",
+                              nfolds = 4,
+                              thresh = 1e-3,
+                              maxit = 1e3)
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+# The maximum AUC value
+print(paste("max AUC =", round(max(glmnet_classifier_tfidf$cvm), 4)))
+
+# Get the predictions for the test data using the glmnet_classifier
+preds = predict.cv.glmnet(glmnet_classifier_tfidf, dtm_test_tfidf, type = 'response')[,1]
+auctest = glmnet:::auc(test$starsbinary, preds)
+
+# The maximum AUC value for the test data
+print(paste("max AUC test =", round(max(auctest), 4)))
+
+CM <- confusionMatrix(as.factor(round(preds,0)), as.factor(test$starsbinary))
+print(paste("Accuracy =", round(CM$overall[1], 3)))
+
+resultsForPlotting <- data.frame('ID' = test$review_id,
+                                'Pred' = preds,
+                                'Actual' = test$starsbinary,
+                                'ActualStars' = test$stars)
+h <- ggplot(data = resultsForPlotting, aes(Pred)) + 
+      geom_histogram(aes(fill = as.factor(Actual)), bins = 20)
+h
+
+h2 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(ActualStars))) + 
+      geom_density(alpha = 0.1)
+h2
+
+```
+
+The results with glm using tf-idf preprosessed data produced similar reults to the Normalized data with AUC=0.930
+
+```{r plot some results}
+
+resultsForPlotting <- data.frame('ID' = test$review_id,
+                                'Pred' = preds,
+                                'Actual' = test$starsbinary,
+                                'ActualStars' = test$stars)
+h <- ggplot(data = resultsForPlotting, aes(Pred)) + 
+      geom_histogram(aes(fill = as.factor(Actual)), bins = 20)
+h
+
+h2 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(ActualStars))) + 
+      geom_density(alpha = 0.1)
+h2
+
+h3 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = Actual)) + 
+      geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity', bins = 20)
+h3
+
+```
+
+### GloVe Word Embeddings
+
+The same test set vectorizer will be used as above. Now instead of creating a document term matrix I will construct a term-co-occurence matrix (TCM). 
+This did not work for now.
+
+```{r word embedding}
+
+## The same test set vectorizer will be used as above.
+
+# tcm <- create_tcm(t1, vectorizer, skip_grams_window = 5L)
+# 
+# time_initial = Sys.time()
+# 
+# # The TCM matrix will be facorized using hte GloVE algorithm
+# glove = GlobalVectors$new(word_vectors_size = 50, vocabulary = vocab_pruned, x_max = 10)
+# glove$fit_transform(tcm, n_iter = 20)
+# 
+# # Print the time it took
+# print(difftime(Sys.time(), time_initial, units = 'min'))
+# 
+# word_vectors <- glove$components
+# 
+# wordtest <- word_vectors["good", ] - 
+#   word_vectors["service", ] + 
+#   word_vectors["restaurant", ]
+# cos_sim = sim2(x = word_vectors, y = wordtest, method = "cosine", norm = "l2")
+# head(sort(cos_sim[,1], decreasing = TRUE), 5)
+
+```
+
+### Naive Bayes Classifier
+
+```{r Naive Bayes}
+
+library(klaR)
+time_initial = Sys.time()
+nb_classifier = klaR::NaiveBayes(as.matrix(dtm_train), as.factor(train$starsbinary), fL = 1)
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+pred_nb <- predict(nb_classifier, newdata=as.matrix(dtm_train))
+
+``` 
+
+
+
+```{r svm}
+
+library(e1071)
+time_initial = Sys.time()
+svm_classifier = svm(as.matrix(dtm_train)[1:10000,], train$starsbinary[1:10000])
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+pred_nb <- predict(nb_classifier, newdata=as.matrix(dtm_train))
+
+``` 
