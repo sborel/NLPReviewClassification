@@ -264,6 +264,7 @@ Now the same model will be used but with normalized data. L1 Normalization is ap
 
 dtm_train_norm = normalize(dtm_train, "l1")
 
+time_initial = Sys.time()
 glmnet_classifier_norm = cv.glmnet(x = dtm_train_norm, y = train$starsbinary,
                               family = 'binomial',
                               alpha = 1,
@@ -271,6 +272,7 @@ glmnet_classifier_norm = cv.glmnet(x = dtm_train_norm, y = train$starsbinary,
                               nfolds = 4,
                               thresh = 1e-3,
                               maxit = 1e3)
+print(difftime(Sys.time(), time_initial, units = 'min'))
 
 # The maximum AUC value
 print(paste("max AUC =", round(max(glmnet_classifier_norm$cvm), 4)))
@@ -300,6 +302,7 @@ h2 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(ActualStars
 h2
 
 ```
+
 
 Normalization provided slightly better results at AUC = 0.930 for both test and train data.
 
@@ -385,24 +388,49 @@ This did not work for now.
 
 ## The same test set vectorizer will be used as above.
 
-# tcm <- create_tcm(t1, vectorizer, skip_grams_window = 5L)
-# 
-# time_initial = Sys.time()
-# 
-# # The TCM matrix will be facorized using hte GloVE algorithm
-# glove = GlobalVectors$new(word_vectors_size = 50, vocabulary = vocab_pruned, x_max = 10)
-# glove$fit_transform(tcm, n_iter = 20)
-# 
-# # Print the time it took
-# print(difftime(Sys.time(), time_initial, units = 'min'))
-# 
-# word_vectors <- glove$components
-# 
-# wordtest <- word_vectors["good", ] - 
-#   word_vectors["service", ] + 
-#   word_vectors["restaurant", ]
-# cos_sim = sim2(x = word_vectors, y = wordtest, method = "cosine", norm = "l2")
-# head(sort(cos_sim[,1], decreasing = TRUE), 5)
+tcm <- create_tcm(t1, vectorizer, skip_grams_window = 5L)
+tcm[1:5,1:5]
+
+time_initial = Sys.time()
+
+# The TCM matrix will be facorized using hte GloVE algorithm
+glove = GlobalVectors$new(word_vectors_size = 50, vocabulary = vocab_pruned, x_max = 10)
+word_vectors_main = glove$fit_transform(tcm, n_iter = 20)
+
+# Print the time it took
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+# Words evaluated
+words <- vocab_pruned$term
+
+word_vectors_context <- glove$components
+
+# This matrix has rows as all the unique words in vocab_pruned and the columns as the 50 dimentions
+word_vectors <- word_vectors_main + t(word_vectors_context)
+
+
+# Going to try to build a feature vector for each review in the training set.
+# This will be done by taking hte average vector from all the words contained
+
+#cut down dtm_train to words that are in vocab_pruned
+
+train_embed <- dtm_train[,words]
+
+time_initial = Sys.time()
+# loop over all reviews
+train_embed_matrix <- train_embed %*% word_vectors
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+time_initial = Sys.time()
+glmnet_classifier_tfidf = cv.glmnet(x = train_embed_matrix, y = train$starsbinary,
+                              family = 'binomial',
+                              alpha = 1,
+                              type.measure = "auc",
+                              nfolds = 4,
+                              thresh = 1e-3,
+                              maxit = 1e3)
+print(difftime(Sys.time(), time_initial, units = 'min'))
+print(paste("max AUC =", round(max(glmnet_classifier_tfidf$cvm), 4)))
 
 ```
 
@@ -431,3 +459,62 @@ print(difftime(Sys.time(), time_initial, units = 'min'))
 pred_nb <- predict(nb_classifier, newdata=as.matrix(dtm_train))
 
 ``` 
+
+## Multinomial Classification
+
+```{r multi}
+
+# Seed is set for reproducibility
+set.seed(100)
+trainIndexM = createDataPartition(reviews$stars, p=0.6, list=FALSE)
+trainM = reviews[trainIndexM,]
+testM = reviews[-trainIndexM,]
+
+t1M <- itoken(trainM$text,
+             preprocessor = tolower,
+             tokenizer = word_tokenizer,
+             ids = trainM$review_id,
+             progressbar = FALSE)
+
+# The vocabulary matrix is created with stopwords being removed
+vocabM <- create_vocabulary(t1M, stopwords = stopwords::stopwords("en"))
+
+vocab_prunedM <- prune_vocabulary(vocabM, 
+                          term_count_min = 10, 
+                          doc_proportion_max = 0.5,
+                          doc_proportion_min = 0.0001)
+
+vectorizerM = vocab_vectorizer(vocab_prunedM)
+
+# A document term matrix is created
+dtm_trainM = create_dtm(t1M, vectorizerM) 
+
+# The iterators will be created for the test data
+it_testM <- itoken(testM$text,
+             preprocessor = tolower,
+             tokenizer = word_tokenizer,
+             ids = testM$review_id,
+             progressbar = FALSE)
+
+# The DTM is created using the vectorizer from the training data evaluation
+dtm_testM = create_dtm(it_testM, vectorizerM)
+
+# define a TF-IDF model object
+tfidf_modelM = TfIdf$new()
+# fit the model to the training data
+dtm_trainM_tfidf = fit_transform(dtm_trainM, tfidf_modelM)
+# apply model to train data to prepare tf-idf version
+dtm_testM_tfidf = transform(dtm_testM, tfidf_modelM)
+
+time_initial = Sys.time()
+glmnet_classifierM_tfidf = cv.glmnet(x = dtm_trainM_tfidf, y = as.factor(trainM$stars),
+                              family = 'multinomial',
+                              nfolds = 4, 
+                              thresh = 1e-3,
+                              maxit = 1e3)
+print(difftime(Sys.time(), time_initial, units = 'min'))
+
+preds = predict.cv.glmnet(glmnet_classifierM_tfidf, dtm_testM_tfidf, type = 'response')
+auctest = glmnet:::auc(testM$stars, preds)
+
+```
