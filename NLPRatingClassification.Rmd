@@ -394,8 +394,8 @@ tcm[1:5,1:5]
 time_initial = Sys.time()
 
 # The TCM matrix will be facorized using hte GloVE algorithm
-glove = GlobalVectors$new(word_vectors_size = 50, vocabulary = vocab_pruned, x_max = 10)
-word_vectors_main = glove$fit_transform(tcm, n_iter = 20)
+glove = GlobalVectors$new(word_vectors_size = 200, vocabulary = vocab_pruned, x_max = 10)
+word_vectors_main = glove$fit_transform(tcm, n_iter =  30)
 
 # Print the time it took
 print(difftime(Sys.time(), time_initial, units = 'min'))
@@ -408,7 +408,6 @@ word_vectors_context <- glove$components
 # This matrix has rows as all the unique words in vocab_pruned and the columns as the 50 dimentions
 word_vectors <- word_vectors_main + t(word_vectors_context)
 
-
 # Going to try to build a feature vector for each review in the training set.
 # This will be done by taking hte average vector from all the words contained
 
@@ -417,7 +416,6 @@ word_vectors <- word_vectors_main + t(word_vectors_context)
 train_embed <- dtm_train[,words]
 
 time_initial = Sys.time()
-# loop over all reviews
 train_embed_matrix <- train_embed %*% word_vectors
 print(difftime(Sys.time(), time_initial, units = 'min'))
 
@@ -431,6 +429,21 @@ glmnet_classifier_tfidf = cv.glmnet(x = train_embed_matrix, y = train$starsbinar
                               maxit = 1e3)
 print(difftime(Sys.time(), time_initial, units = 'min'))
 print(paste("max AUC =", round(max(glmnet_classifier_tfidf$cvm), 4)))
+
+# Create the test matrix
+
+test_embed <- dtm_test[,words]
+test_embed_matrix <- test_embed %*% word_vectors
+
+# Get the predictions for the test data
+preds = predict.cv.glmnet(glmnet_classifier_tfidf, test_embed_matrix, type = 'response')[,1]
+auctest = glmnet:::auc(test$starsbinary, preds)
+
+# The maximum AUC value for the test data
+print(paste("max AUC test =", round(max(auctest), 4)))
+
+CM <- confusionMatrix(as.factor(round(preds,0)), as.factor(test$starsbinary))
+print(paste("Accuracy =", round(CM$overall[1], 3)))
 
 ```
 
