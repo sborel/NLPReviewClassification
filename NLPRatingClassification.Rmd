@@ -39,6 +39,15 @@ This file provides information about the businesses included in Yelp.
 ```{r loading business data}
 business <- stream_in(file("dataset/business.json"), verbose = FALSE)
 
+# See which states are included?
+locs <- data.frame(table(business$state, dnn = c("State")))
+# Order by frequency 
+locs[order(locs$Freq, decreasing = T),]
+
+business[which(business$state=="EDH")[1],1:7]
+business[which(business$state=="BW")[1],1:7]
+# It looks like locations from Canada, USA and Europe are included
+
 # Filter on businesses that are in the Canadian province of Ontario
 businessON <- business[which(business$state=="ON"),];
 
