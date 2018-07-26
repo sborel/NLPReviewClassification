@@ -162,8 +162,8 @@ There are a lot of words that are rarely used in reviews and that may be misspel
 ```{r}
 vocab_pruned <- prune_vocabulary(vocab, 
                           term_count_min = 10, 
-                          doc_proportion_max = 0.5,
-                          doc_proportion_min = 0.001)
+                          doc_proportion_max = 0.4,
+                          doc_proportion_min = 0.0001)
 
 vectorizer = vocab_vectorizer(vocab_pruned)
 
@@ -333,6 +333,8 @@ print(difftime(Sys.time(), time_initial, units = 'min'))
 # The maximum AUC value
 print(paste("max AUC =", round(max(glmnet_classifier_tfidf$cvm), 4)))
 
+plot(glmnet_classifier)
+
 # Get the predictions for the test data using the glmnet_classifier
 preds = predict.cv.glmnet(glmnet_classifier_tfidf, dtm_test_tfidf, type = 'response')[,1]
 auctest = glmnet:::auc(test$starsbinary, preds)
@@ -347,13 +349,44 @@ resultsForPlotting <- data.frame('ID' = test$review_id,
                                 'Pred' = preds,
                                 'Actual' = test$starsbinary,
                                 'ActualStars' = test$stars)
-h <- ggplot(data = resultsForPlotting, aes(Pred)) + 
-      geom_histogram(aes(fill = as.factor(Actual)), bins = 20)
+h <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(Actual))) + 
+      geom_histogram(alpha = 0.4, bins = 20,  position="identity") +
+      guides(fill=guide_legend(title="True Rating")) +
+      xlab("Prediction from Model") +
+      ylab("Count") +
+      ggtitle("Comparing Predicted and Actual Results") +
+      theme(plot.title = element_text(face = "bold", hjust = 0.5))
 h
 
 h2 <- ggplot(data = resultsForPlotting, aes(x=Pred, fill = as.factor(ActualStars))) + 
-      geom_density(alpha = 0.1)
+      geom_density(alpha = 0.1) +
+      guides(fill=guide_legend(title="True Star Rating")) +
+      xlab("Prediction from Model") +
+      ylab("Count") +
+      ggtitle("Comparing Predicted and Actual Star Results") +
+      theme(plot.title = element_text(face = "bold", hjust = 0.5))
 h2
+
+# Test accuracy of extreme reviews
+extremeonly = test$stars %in% c(1,5)
+
+preds_extreme = predict.cv.glmnet(glmnet_classifier_tfidf, dtm_test_tfidf[extremeonly,], type = 'response')[,1]
+auctest_extreme = glmnet:::auc(test$starsbinary[extremeonly], preds_extreme)
+
+# The maximum AUC value for the test data
+print(paste("max AUC test =", round(max(auctest_extreme), 4)))
+
+CM_extreme <- confusionMatrix(as.factor(round(preds_extreme,0)), as.factor(test$starsbinary[extremeonly]))
+print(paste("Accuracy =", round(CM_extreme$overall[1], 3)))
+
+h <- ggplot(data = resultsForPlotting[extremeonly,], aes(x=Pred, fill = as.factor(Actual))) + 
+      geom_histogram(alpha = 0.4, bins = 20,  position="identity") +
+      guides(fill=guide_legend(title="True Rating")) +
+      xlab("Prediction from Model") +
+      ylab("Count") +
+      ggtitle("Comparing Predicted and Actual Results") +
+      theme(plot.title = element_text(face = "bold", hjust = 0.5))
+h
 
 ```
 
@@ -453,7 +486,7 @@ print(paste("Accuracy =", round(CM$overall[1], 3)))
 
 library(klaR)
 time_initial = Sys.time()
-nb_classifier = klaR::NaiveBayes(as.matrix(dtm_train), as.factor(train$starsbinary), fL = 1)
+nb_classifier = klaR::NaiveBayes(as.matrix(dtm_train_norm), as.factor(train$starsbinary), fL = 1)
 print(difftime(Sys.time(), time_initial, units = 'min'))
 
 pred_nb <- predict(nb_classifier, newdata=as.matrix(dtm_train))
@@ -466,7 +499,7 @@ pred_nb <- predict(nb_classifier, newdata=as.matrix(dtm_train))
 
 library(e1071)
 time_initial = Sys.time()
-svm_classifier = svm(as.matrix(dtm_train)[1:10000,], train$starsbinary[1:10000])
+svm_classifier = svm(as.matrix(dtm_train_norm)[1:27480,], train$starsbinary[1:27480])
 print(difftime(Sys.time(), time_initial, units = 'min'))
 
 pred_nb <- predict(nb_classifier, newdata=as.matrix(dtm_train))
